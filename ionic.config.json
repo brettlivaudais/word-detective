@@ -1,0 +1,8 @@
+{
+  "name": "WordDetective",
+  "integrations": {
+    "capacitor": {}
+  },
+  "type": "vue",
+  "id": "7d5c59cd"
+}
