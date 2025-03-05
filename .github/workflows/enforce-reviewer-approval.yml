@@ -26,6 +26,7 @@ jobs:
             "https://api.github.com/repos/$REPO/pulls/$PR_NUMBER/reviews" | \
             jq -r 'group_by(.user.login) | map(sort_by(.submitted_at) | last) | map(select(.state=="APPROVED")) | .[].user.login')
 
+          echo "$APPROVED_REVIEWERS"
 
           # Check if all requested reviewers have approved
           for reviewer in $REQUESTED_REVIEWERS; do
