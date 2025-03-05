@@ -1,0 +1,37 @@
+name: Enforce All Tagged Reviewers' Approval
+
+on:
+  pull_request:
+    types:
+      - closed  # Trigger when a PR is merged
+
+jobs:
+  check-reviewers:
+    if: github.event.pull_request.merged == true  # Only run on merged PRs
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check required reviewer approvals
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR_NUMBER=${{ github.event.pull_request.number }}
+          REPO="${{ github.repository }}"
+          
+          # Get the list of requested reviewers (users, not teams)
+          REQUESTED_REVIEWERS=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+            "https://api.github.com/repos/$REPO/pulls/$PR_NUMBER/requested_reviewers" | jq -r '.users[].login')
+          
+          # Get the list of approved reviewers
+          APPROVED_REVIEWERS=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+            "https://api.github.com/repos/$REPO/pulls/$PR_NUMBER/reviews" | jq -r '.[] | select(.state=="APPROVED") | .user.login')
+
+          # Check if all requested reviewers have approved
+          for reviewer in $REQUESTED_REVIEWERS; do
+            if ! echo "$APPROVED_REVIEWERS" | grep -q "$reviewer"; then
+              echo "❌ Merge is invalid! Required reviewer @$reviewer has NOT approved."
+              exit 1
+            fi
+          done
+          
+          echo "✅ All tagged reviewers have approved. Merge is valid."
