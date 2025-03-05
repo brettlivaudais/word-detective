@@ -4,13 +4,12 @@ on:
   pull_request:
     types:
       - closed  # Runs when PR is merged
+      - review_requested  # Runs when a reviewer is assigned
+      - review_request_removed  # Runs when a reviewer is removed
   pull_request_review:
     types:
       - submitted  # Runs when a review is submitted
-      - dismissed  # Runs when a review is dismissed
-  pull_request_review_request:
-    types:
-      - added  # Runs when a reviewer is assigned or a re-review is requested
+      - dismissed  # Runs when a review is dismissed (to re-run the check)
 
 jobs:
   check-reviewers:
