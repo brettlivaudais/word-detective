@@ -3,7 +3,10 @@ name: Enforce All Tagged Reviewers' Approval
 on:
   pull_request:
     types:
-      - closed  # Trigger when a PR is merged
+      - closed  # Runs when PR is merged
+  pull_request_review:
+    types:
+      - submitted  # Runs whenever a review is submitted
 
 jobs:
   check-reviewers:
