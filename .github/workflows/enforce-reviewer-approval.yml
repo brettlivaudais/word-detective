@@ -13,7 +13,6 @@ on:
 
 jobs:
   check-reviewers:
-    if: github.event.pull_request.merged == true  # Only run on merged PRs
     runs-on: ubuntu-latest
 
     steps:
