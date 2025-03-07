@@ -21,7 +21,7 @@ jobs:
             const owner = context.repo.owner;
             const repo = context.repo.repo;
 
-            // Fetch requested reviewers (users only, ignoring teams)
+            // Fetch all requested reviewers (users only, ignoring teams)
             const { data: requestedReviewers } = await github.rest.pulls.listRequestedReviewers({
               owner,
               repo,
@@ -30,10 +30,6 @@ jobs:
 
             const requiredReviewers = new Set(requestedReviewers.users.map(user => user.login));
 
-            console.log(requiredReviewers);
-
-
-
             // Fetch all reviews for this PR
             const { data: reviews } = await github.rest.pulls.listReviews({
               owner,
@@ -41,23 +37,34 @@ jobs:
               pull_number: prNumber
             });
 
+            // Fetch all review requests (to track re-reviews)
+            const { data: timeline } = await github.rest.issues.listEventsForTimeline({
+              owner,
+              repo,
+              issue_number: prNumber
+            });
+
+            // Track who has been re-requested for review
+            const reRequestedReviewers = new Set();
+            for (const event of timeline) {
+              if (event.event === "review_requested") {
+                reRequestedReviewers.add(event.requested_reviewer.login);
+              }
+            }
+
             // Track latest review states per reviewer
             const latestReviews = new Map();
             for (const review of reviews) {
-              console.log("User-");
-              console.log(review.user.login);
-              console.log("State-");
-              console.log(review.state);
               latestReviews.set(review.user.login, review.state);
             }
 
-            // Determine if all assigned reviewers have approved
+            // Determine if all assigned reviewers have approved (taking re-requests into account)
             let allApproved = true;
             for (const reviewer of requiredReviewers) {
               const reviewState = latestReviews.get(reviewer);
               
-              // Must be explicitly "APPROVED"
-              if (reviewState !== "APPROVED") {
+              // If a reviewer was re-requested, ignore old approvals
+              if (reRequestedReviewers.has(reviewer) || reviewState !== "APPROVED") {
                 allApproved = false;
                 break;
               }
