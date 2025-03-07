@@ -28,6 +28,10 @@ jobs:
               pull_number: prNumber
             });
 
+            for (const reviewer of requiredReviewers) {
+              console.log(reviewer);
+            }
+
             const requiredReviewers = new Set(requestedReviewers.users.map(user => user.login));
 
             // Fetch all reviews for this PR
