@@ -16,7 +16,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       pull-requests: read
-      statuses: write  # Ensure workflow can update PR status
+      checks: write  # Allows writing check runs to override failures
+      statuses: write  # Allows updating PR status checks
 
     steps:
       - name: Check required reviewer approvals
@@ -47,20 +48,40 @@ jobs:
             if ! echo "$APPROVED_REVIEWERS" | grep -q "$reviewer"; then
               echo "❌ Merge is invalid! Required reviewer @$reviewer has NOT approved."
 
-              # 🚨 Force a status update to fail the PR
+              # 🚨 Force a failure check run (this replaces the previous one)
               curl -s -X POST -H "Authorization: token $GITHUB_TOKEN" \
                 -H "Accept: application/vnd.github.v3+json" \
-                "https://api.github.com/repos/$REPO/statuses/${{ github.sha }}" \
-                -d '{"state": "failure", "context": "Enforce All Tagged Reviewers Approval", "description": "A required reviewer has not approved."}'
-                
+                "https://api.github.com/repos/$REPO/check-runs" \
+                -d '{
+                  "name": "Enforce All Tagged Reviewers Approval",
+                  "head_sha": "'${{ github.sha }}'",
+                  "status": "completed",
+                  "conclusion": "failure",
+                  "output": {
+                    "title": "Reviewer Approval Missing",
+                    "summary": "A required reviewer has not approved.",
+                    "text": "One or more required reviewers have not approved this PR."
+                  }
+                }'
+
               exit 1
             fi
           done
 
           echo "✅ All tagged reviewers have approved. Merge is valid."
 
-          # ✅ Force a passing status update (overwriting the old failed check)
+          # ✅ Force a passing check run (overwriting the old failed check)
           curl -s -X POST -H "Authorization: token $GITHUB_TOKEN" \
             -H "Accept: application/vnd.github.v3+json" \
-            "https://api.github.com/repos/$REPO/statuses/${{ github.sha }}" \
-            -d '{"state": "success", "context": "Enforce All Tagged Reviewers Approval", "description": "All required reviewers have approved."}'
+            "https://api.github.com/repos/$REPO/check-runs" \
+            -d '{
+              "name": "Enforce All Tagged Reviewers Approval",
+              "head_sha": "'${{ github.sha }}'",
+              "status": "completed",
+              "conclusion": "success",
+              "output": {
+                "title": "All Required Reviewers Approved",
+                "summary": "All tagged reviewers have approved this PR.",
+                "text": "This PR meets the review requirements and can be merged."
+              }
+            }'
