@@ -9,11 +9,14 @@ on:
   pull_request_review:
     types:
       - submitted  # Runs when a review is submitted
-      - dismissed  # Runs when a review is dismissed (e.g., outdated review)
+      - dismissed  # Runs when a review is dismissed
 
 jobs:
   check-reviewers:
     runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+      statuses: write  # Ensure workflow can update PR status
 
     steps:
       - name: Check required reviewer approvals
@@ -32,7 +35,7 @@ jobs:
             "https://api.github.com/repos/$REPO/pulls/$PR_NUMBER/reviews" | \
             jq -r 'group_by(.user.login) | map(sort_by(.submitted_at) | last) | map(select(.state=="APPROVED")) | .[].user.login')
 
-          # If a review was re-requested, the previous approval should not count
+          # If a review was re-requested, invalidate the previous approval
           if [[ "${{ github.event.action }}" == "review_requested" ]]; then
             REQUESTED_USER="${{ github.event.requested_reviewer.login }}"
             echo "🔄 Review was re-requested for @$REQUESTED_USER. Invalidating previous approval."
@@ -43,8 +46,21 @@ jobs:
           for reviewer in $REQUESTED_REVIEWERS; do
             if ! echo "$APPROVED_REVIEWERS" | grep -q "$reviewer"; then
               echo "❌ Merge is invalid! Required reviewer @$reviewer has NOT approved."
+              
+              # 🚨 Force a status update to fail the PR
+              curl -s -X POST -H "Authorization: token $GITHUB_TOKEN" \
+                -H "Accept: application/vnd.github.v3+json" \
+                "https://api.github.com/repos/$REPO/statuses/$(git rev-parse HEAD)" \
+                -d '{"state": "failure", "context": "Enforce All Tagged Reviewers Approval", "description": "A required reviewer has not approved."}'
+                
               exit 1
             fi
           done
 
           echo "✅ All tagged reviewers have approved. Merge is valid."
+
+          # ✅ Force a passing status update
+          curl -s -X POST -H "Authorization: token $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/repos/$REPO/statuses/$(git rev-parse HEAD)" \
+            -d '{"state": "success", "context": "Enforce All Tagged Reviewers Approval", "description": "All required reviewers have approved."}'
