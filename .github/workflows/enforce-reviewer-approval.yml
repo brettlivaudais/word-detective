@@ -1,73 +1,56 @@
-name: "Enforce Required Approvals"
+name: Enforce Reviewer Approvals
 
 on:
   pull_request:
-    types:
-      - opened
-      - reopened
-      - synchronize
-      - review_requested
-      - review_request_removed
-      - ready_for_review
-  pull_request_review:
-    types:
-      - submitted
-      - dismissed
+    types: [review_requested, review_request_removed, submitted, synchronize, opened]
 
 jobs:
   enforce-approvals:
     runs-on: ubuntu-latest
-    permissions:
-      pull-requests: read
-      checks: write
-      statuses: write
-
     steps:
-      - name: Get PR Review Information
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          PR_NUMBER=${{ github.event.pull_request.number }}
-          REPO="${{ github.repository }}"
+      - name: Check required approvals
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const prNumber = context.payload.pull_request.number;
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
 
-          # Get list of requested reviewers
-          REQUESTED_REVIEWERS=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
-            "https://api.github.com/repos/$REPO/pulls/$PR_NUMBER/requested_reviewers" | jq -r '.users[].login')
+            // Fetch all requested reviewers (users only, ignoring teams)
+            const { data: requestedReviewers } = await github.rest.pulls.listRequestedReviewers({
+              owner,
+              repo,
+              pull_number: prNumber
+            });
 
-          # Get latest approvals from reviewers
-          APPROVED_REVIEWERS=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
-            "https://api.github.com/repos/$REPO/pulls/$PR_NUMBER/reviews" | \
-            jq -r 'group_by(.user.login) | map(sort_by(.submitted_at) | last) | map(select(.state=="APPROVED")) | .[].user.login')
+            const requiredReviewers = new Set(requestedReviewers.users.map(user => user.login));
 
-          echo "🔍 Requested Reviewers: $REQUESTED_REVIEWERS"
-          echo "✅ Approved Reviewers: $APPROVED_REVIEWERS"
+            // Fetch all reviews
+            const { data: reviews } = await github.rest.pulls.listReviews({
+              owner,
+              repo,
+              pull_number: prNumber
+            });
 
-          # If a review was re-requested, invalidate approval for that user
-          if [[ "${{ github.event.action }}" == "review_requested" ]]; then
-            REQUESTED_USER="${{ github.event.requested_reviewer.login }}"
-            echo "🔄 Review was re-requested for @$REQUESTED_USER. Removing approval."
-            APPROVED_REVIEWERS=$(echo "$APPROVED_REVIEWERS" | grep -v "$REQUESTED_USER" || true)
-          fi
+            const latestReviews = new Map();
+            for (const review of reviews) {
+              latestReviews.set(review.user.login, review);
+            }
 
-          # Check if all requested reviewers have approved
-          for reviewer in $REQUESTED_REVIEWERS; do
-            if ! echo "$APPROVED_REVIEWERS" | grep -q "$reviewer"; then
-              echo "❌ PR cannot be merged. Required reviewer @$reviewer has NOT approved."
+            // Determine if all required reviewers have approved
+            let allApproved = true;
+            for (const reviewer of requiredReviewers) {
+              const review = latestReviews.get(reviewer);
+              if (!review || review.state !== "APPROVED") {
+                allApproved = false;
+                break;
+              }
+            }
 
-              # 🔴 FAIL the status check
-              curl -s -X POST -H "Authorization: token $GITHUB_TOKEN" \
-                -H "Accept: application/vnd.github.v3+json" \
-                "https://api.github.com/repos/$REPO/statuses/${{ github.sha }}" \
-                -d '{"state": "failure", "context": "Enforce Required Approvals", "description": "Required reviewer @$reviewer has not approved."}'
-
-              exit 1
-            fi
-          done
-
-          echo "✅ All required reviewers have approved."
-
-          # 🟢 PASS the status check
-          curl -s -X POST -H "Authorization: token $GITHUB_TOKEN" \
-            -H "Accept: application/vnd.github.v3+json" \
-            "https://api.github.com/repos/$REPO/statuses/${{ github.sha }}" \
-            -d '{"state": "success", "context": "Enforce Required Approvals", "description": "All required reviewers have approved."}'
+            if (allApproved) {
+              console.log("✅ All required reviewers have approved.");
+            } else {
+              console.log("❌ Not all required reviewers have approved.");
+              core.setFailed("Pull request cannot be merged until all requested reviewers approve.");
+            }
