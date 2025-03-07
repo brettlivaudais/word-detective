@@ -1,85 +1,73 @@
-name: Enforce All Tagged Reviewers' Approval
+name: "Enforce Required Approvals"
 
 on:
   pull_request:
     types:
-      - closed  # Runs when PR is merged
-      - review_requested  # Runs when a reviewer is assigned or re-requested
-      - review_request_removed  # Runs when a reviewer is removed
+      - opened
+      - reopened
+      - synchronize
+      - review_requested
+      - review_request_removed
+      - ready_for_review
   pull_request_review:
     types:
-      - submitted  # Runs when a review is submitted
-      - dismissed  # Runs when a review is dismissed
+      - submitted
+      - dismissed
 
 jobs:
-  check-reviewers:
+  enforce-approvals:
     runs-on: ubuntu-latest
     permissions:
       pull-requests: read
-      actions: write  # Allows restarting failed runs
-      checks: write  # Allows writing check runs to override failures
-      statuses: write  # Allows updating PR status checks
+      checks: write
+      statuses: write
 
     steps:
-      - name: Fetch PR and Review Data
+      - name: Get PR Review Information
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           PR_NUMBER=${{ github.event.pull_request.number }}
           REPO="${{ github.repository }}"
 
-          # Get the list of currently assigned reviewers
+          # Get list of requested reviewers
           REQUESTED_REVIEWERS=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
             "https://api.github.com/repos/$REPO/pulls/$PR_NUMBER/requested_reviewers" | jq -r '.users[].login')
 
-          # Get the list of reviewers who approved (only the latest review per user counts)
+          # Get latest approvals from reviewers
           APPROVED_REVIEWERS=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
             "https://api.github.com/repos/$REPO/pulls/$PR_NUMBER/reviews" | \
             jq -r 'group_by(.user.login) | map(sort_by(.submitted_at) | last) | map(select(.state=="APPROVED")) | .[].user.login')
 
-          # DEBUGGING: Log reviewers
           echo "🔍 Requested Reviewers: $REQUESTED_REVIEWERS"
-          echo "✅ Approved Reviewers Before Filtering: $APPROVED_REVIEWERS"
+          echo "✅ Approved Reviewers: $APPROVED_REVIEWERS"
 
-          # 🚨 If a review was re-requested, invalidate the previous approval
+          # If a review was re-requested, invalidate approval for that user
           if [[ "${{ github.event.action }}" == "review_requested" ]]; then
             REQUESTED_USER="${{ github.event.requested_reviewer.login }}"
-            echo "🔄 Review was re-requested for @$REQUESTED_USER. Invalidating previous approval."
-            
-            # Remove the previous approval of the user who was requested for re-review
-            FILTERED_APPROVED_REVIEWERS=$(echo "$APPROVED_REVIEWERS" | grep -v "$REQUESTED_USER" || true)
-            APPROVED_REVIEWERS=$FILTERED_APPROVED_REVIEWERS
-
-            echo "✅ Approved Reviewers After Filtering: $APPROVED_REVIEWERS"
-
-            # 🚨 Immediately trigger a failing status check
-            curl -s -X POST -H "Authorization: token $GITHUB_TOKEN" \
-              -H "Accept: application/vnd.github.v3+json" \
-              "https://api.github.com/repos/$REPO/statuses/${{ github.sha }}" \
-              -d '{"state": "failure", "context": "Enforce All Tagged Reviewers Approval", "description": "A reviewer has been re-requested. Approval is now required again."}'
-
-            exit 1
+            echo "🔄 Review was re-requested for @$REQUESTED_USER. Removing approval."
+            APPROVED_REVIEWERS=$(echo "$APPROVED_REVIEWERS" | grep -v "$REQUESTED_USER" || true)
           fi
 
-          # 🚨 Check if all requested reviewers have approved
+          # Check if all requested reviewers have approved
           for reviewer in $REQUESTED_REVIEWERS; do
             if ! echo "$APPROVED_REVIEWERS" | grep -q "$reviewer"; then
-              echo "❌ Merge is invalid! Required reviewer @$reviewer has NOT approved."
+              echo "❌ PR cannot be merged. Required reviewer @$reviewer has NOT approved."
 
-              # 🚨 Trigger a failing status check
+              # 🔴 FAIL the status check
               curl -s -X POST -H "Authorization: token $GITHUB_TOKEN" \
                 -H "Accept: application/vnd.github.v3+json" \
                 "https://api.github.com/repos/$REPO/statuses/${{ github.sha }}" \
-                -d '{"state": "failure", "context": "Enforce All Tagged Reviewers Approval", "description": "One or more required reviewers have not approved."}'
+                -d '{"state": "failure", "context": "Enforce Required Approvals", "description": "Required reviewer @$reviewer has not approved."}'
 
               exit 1
             fi
           done
 
-          echo "✅ All tagged reviewers have approved. Merge is valid."
+          echo "✅ All required reviewers have approved."
 
-          # ✅ Force GitHub to re-run the check properly
+          # 🟢 PASS the status check
           curl -s -X POST -H "Authorization: token $GITHUB_TOKEN" \
             -H "Accept: application/vnd.github.v3+json" \
             "https://api.github.com/repos/$REPO/statuses/${{ github.sha }}" \
-            -d '{"state": "success", "context": "Enforce All Tagged Reviewers Approval", "description": "All required reviewers have approved."}'
+            -d '{"state": "success", "context": "Enforce Required Approvals", "description": "All required reviewers have approved."}'
