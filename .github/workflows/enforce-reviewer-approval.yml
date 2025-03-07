@@ -8,19 +8,20 @@ on:
       - review_request_removed  # Runs when a reviewer is removed
   pull_request_review:
     types:
-      - submitted  # Runs when a review is submitted
-      - dismissed  # Runs when a review is dismissed
+      - submitted  # Runs when a review is submitted (re-triggers check)
+      - dismissed  # Runs when a review is dismissed (forces re-check)
 
 jobs:
   check-reviewers:
     runs-on: ubuntu-latest
     permissions:
       pull-requests: read
+      actions: write  # Allows restarting failed runs
       checks: write  # Allows writing check runs to override failures
       statuses: write  # Allows updating PR status checks
 
     steps:
-      - name: Check required reviewer approvals
+      - name: Fetch PR and Review Data
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -36,6 +37,10 @@ jobs:
             "https://api.github.com/repos/$REPO/pulls/$PR_NUMBER/reviews" | \
             jq -r 'group_by(.user.login) | map(sort_by(.submitted_at) | last) | map(select(.state=="APPROVED")) | .[].user.login')
 
+          # DEBUGGING: Log reviewers
+          echo "🔍 Requested Reviewers: $REQUESTED_REVIEWERS"
+          echo "✅ Approved Reviewers: $APPROVED_REVIEWERS"
+
           # If a review was re-requested, invalidate the previous approval
           if [[ "${{ github.event.action }}" == "review_requested" ]]; then
             REQUESTED_USER="${{ github.event.requested_reviewer.login }}"
@@ -48,21 +53,11 @@ jobs:
             if ! echo "$APPROVED_REVIEWERS" | grep -q "$reviewer"; then
               echo "❌ Merge is invalid! Required reviewer @$reviewer has NOT approved."
 
-              # 🚨 Force a failure check run (this replaces the previous one)
+              # 🚨 Trigger a new workflow run
               curl -s -X POST -H "Authorization: token $GITHUB_TOKEN" \
-                -H "Accept: application/vnd.github.v3+json" \
-                "https://api.github.com/repos/$REPO/check-runs" \
-                -d '{
-                  "name": "Enforce All Tagged Reviewers Approval",
-                  "head_sha": "'${{ github.sha }}'",
-                  "status": "completed",
-                  "conclusion": "failure",
-                  "output": {
-                    "title": "Reviewer Approval Missing",
-                    "summary": "A required reviewer has not approved.",
-                    "text": "One or more required reviewers have not approved this PR."
-                  }
-                }'
+                -H "Accept: application/vnd.github.everest-preview+json" \
+                "https://api.github.com/repos/$REPO/actions/workflows/enforce_review.yml/dispatches" \
+                -d '{"ref": "main"}'
 
               exit 1
             fi
@@ -70,7 +65,7 @@ jobs:
 
           echo "✅ All tagged reviewers have approved. Merge is valid."
 
-          # ✅ Force a passing check run (overwriting the old failed check)
+          # ✅ Force GitHub to re-run the check properly
           curl -s -X POST -H "Authorization: token $GITHUB_TOKEN" \
             -H "Accept: application/vnd.github.v3+json" \
             "https://api.github.com/repos/$REPO/check-runs" \
