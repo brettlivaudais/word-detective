@@ -4,12 +4,12 @@ on:
   pull_request:
     types:
       - closed  # Runs when PR is merged
-      - review_requested  # Runs when a reviewer is assigned
+      - review_requested  # Runs when a reviewer is assigned or re-requested
       - review_request_removed  # Runs when a reviewer is removed
   pull_request_review:
     types:
       - submitted  # Runs when a review is submitted
-      - dismissed  # Runs when a review is dismissed (to re-run the check)
+      - dismissed  # Runs when a review is dismissed (e.g., outdated review)
 
 jobs:
   check-reviewers:
@@ -23,15 +23,21 @@ jobs:
           PR_NUMBER=${{ github.event.pull_request.number }}
           REPO="${{ github.repository }}"
           
-          # Get the list of requested reviewers (users, not teams)
+          # Get the list of currently assigned reviewers
           REQUESTED_REVIEWERS=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
             "https://api.github.com/repos/$REPO/pulls/$PR_NUMBER/requested_reviewers" | jq -r '.users[].login')
-          
+
+          # Get the list of reviewers who approved (only the latest review per user counts)
           APPROVED_REVIEWERS=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
             "https://api.github.com/repos/$REPO/pulls/$PR_NUMBER/reviews" | \
             jq -r 'group_by(.user.login) | map(sort_by(.submitted_at) | last) | map(select(.state=="APPROVED")) | .[].user.login')
 
-          echo "$APPROVED_REVIEWERS"
+          # If a review was re-requested, the previous approval should not count
+          if [[ "${{ github.event.action }}" == "review_requested" ]]; then
+            REQUESTED_USER="${{ github.event.requested_reviewer.login }}"
+            echo "🔄 Review was re-requested for @$REQUESTED_USER. Invalidating previous approval."
+            APPROVED_REVIEWERS=$(echo "$APPROVED_REVIEWERS" | grep -v "$REQUESTED_USER" || true)
+          fi
 
           # Check if all requested reviewers have approved
           for reviewer in $REQUESTED_REVIEWERS; do
@@ -40,5 +46,5 @@ jobs:
               exit 1
             fi
           done
-          
+
           echo "✅ All tagged reviewers have approved. Merge is valid."
