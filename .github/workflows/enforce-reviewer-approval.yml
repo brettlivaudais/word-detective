@@ -17,62 +17,81 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const prNumber = context.payload.pull_request.number;
-            const owner = context.repo.owner;
-            const repo = context.repo.repo;
+            async function wait(ms) {
+              return new Promise(resolve => setTimeout(resolve, ms));
+            }
 
-            // Fetch all requested reviewers (users only, ignoring teams)
-            const { data: requestedReviewers } = await github.rest.pulls.listRequestedReviewers({
-              owner,
-              repo,
-              pull_number: prNumber
-            });
+            async function getReviewData() {
+              const prNumber = context.payload.pull_request.number;
+              const owner = context.repo.owner;
+              const repo = context.repo.repo;
 
-            const requiredReviewers = new Set(requestedReviewers.users.map(user => user.login));
+              // Fetch requested reviewers
+              const { data: requestedReviewers } = await github.rest.pulls.listRequestedReviewers({
+                owner,
+                repo,
+                pull_number: prNumber
+              });
 
-            // Fetch all reviews for this PR
-            const { data: reviews } = await github.rest.pulls.listReviews({
-              owner,
-              repo,
-              pull_number: prNumber
-            });
+              const requiredReviewers = new Set(requestedReviewers.users.map(user => user.login));
 
-            // Fetch all review requests (to track re-reviews)
-            const { data: timeline } = await github.rest.issues.listEventsForTimeline({
-              owner,
-              repo,
-              issue_number: prNumber
-            });
+              // Fetch all reviews for this PR
+              const { data: reviews } = await github.rest.pulls.listReviews({
+                owner,
+                repo,
+                pull_number: prNumber
+              });
 
-            // Track who has been re-requested for review
-            const reRequestedReviewers = new Set();
-            for (const event of timeline) {
-              if (event.event === "review_requested") {
-                reRequestedReviewers.add(event.requested_reviewer.login);
+              // Fetch all timeline events (to check review re-requests)
+              const { data: timeline } = await github.rest.issues.listEventsForTimeline({
+                owner,
+                repo,
+                issue_number: prNumber
+              });
+
+              // Track who has been re-requested for review
+              const reRequestedReviewers = new Set();
+              for (const event of timeline) {
+                if (event.event === "review_requested" && event.requested_reviewer) {
+                  reRequestedReviewers.add(event.requested_reviewer.login);
+                }
+              }
+
+              // Track the latest review state per reviewer
+              const latestReviews = new Map();
+              for (const review of reviews) {
+                latestReviews.set(review.user.login, review.state);
+              }
+
+              return { requiredReviewers, latestReviews, reRequestedReviewers };
+            }
+
+            async function enforceApprovalCheck(attempt = 1) {
+              console.log(`🔄 Fetching latest review data (Attempt ${attempt})...`);
+
+              let { requiredReviewers, latestReviews, reRequestedReviewers } = await getReviewData();
+
+              let allApproved = true;
+              for (const reviewer of requiredReviewers) {
+                const reviewState = latestReviews.get(reviewer);
+
+                // If a reviewer was re-requested, ignore old approvals
+                if (reRequestedReviewers.has(reviewer) || reviewState !== "APPROVED") {
+                  allApproved = false;
+                  break;
+                }
+              }
+
+              if (allApproved) {
+                console.log("✅ All required reviewers have approved.");
+              } else if (attempt < 2) {
+                console.log("⏳ Waiting before retrying to ensure GitHub has updated approvals...");
+                await wait(5000); // Wait 5 seconds before retrying
+                return enforceApprovalCheck(attempt + 1);
+              } else {
+                console.log("❌ Not all required reviewers have approved.");
+                core.setFailed("Pull request cannot be merged until all requested reviewers approve.");
               }
             }
 
-            // Track latest review states per reviewer
-            const latestReviews = new Map();
-            for (const review of reviews) {
-              latestReviews.set(review.user.login, review.state);
-            }
-
-            // Determine if all assigned reviewers have approved (taking re-requests into account)
-            let allApproved = true;
-            for (const reviewer of requiredReviewers) {
-              const reviewState = latestReviews.get(reviewer);
-              
-              // If a reviewer was re-requested, ignore old approvals
-              if (reRequestedReviewers.has(reviewer) || reviewState !== "APPROVED") {
-                allApproved = false;
-                break;
-              }
-            }
-
-            if (allApproved) {
-              console.log("✅ All required reviewers have approved.");
-            } else {
-              console.log("❌ Not all required reviewers have approved.");
-              core.setFailed("Pull request cannot be merged until all requested reviewers approve.");
-            }
+            await enforceApprovalCheck();
