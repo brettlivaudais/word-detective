@@ -4,6 +4,10 @@ on:
   pull_request:
     types: [review_requested, review_request_removed, submitted, synchronize, opened]
 
+permissions:
+  pull-requests: read
+  checks: write
+
 jobs:
   check-reviewers:
     runs-on: ubuntu-latest
@@ -17,7 +21,7 @@ jobs:
             const owner = context.repo.owner;
             const repo = context.repo.repo;
 
-            // Fetch all requested reviewers (users only, ignoring teams)
+            // Fetch requested reviewers (users only, ignoring teams)
             const { data: requestedReviewers } = await github.rest.pulls.listRequestedReviewers({
               owner,
               repo,
@@ -26,23 +30,30 @@ jobs:
 
             const requiredReviewers = new Set(requestedReviewers.users.map(user => user.login));
 
-            // Fetch all reviews
+            // Fetch all reviews for this PR
             const { data: reviews } = await github.rest.pulls.listReviews({
               owner,
               repo,
               pull_number: prNumber
             });
 
+            // Track latest review states per reviewer
             const latestReviews = new Map();
             for (const review of reviews) {
-              latestReviews.set(review.user.login, review);
+              console.log("User-");
+              console.log(review.user.login);
+              console.log("State-");
+              console.log(review.state);
+              latestReviews.set(review.user.login, review.state);
             }
 
-            // Determine if all required reviewers have approved
+            // Determine if all assigned reviewers have approved
             let allApproved = true;
             for (const reviewer of requiredReviewers) {
-              const review = latestReviews.get(reviewer);
-              if (!review || review.state !== "APPROVED") {
+              const reviewState = latestReviews.get(reviewer);
+              
+              // Must be explicitly "APPROVED"
+              if (reviewState !== "APPROVED") {
                 allApproved = false;
                 break;
               }
