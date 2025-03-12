@@ -6,7 +6,6 @@ on:
   pull_request_review:
     types: [submitted, dismissed]
 
-# Add permissions block to specify what the token can access
 permissions:
   contents: read
   pull-requests: read
@@ -41,43 +40,66 @@ jobs:
             // Get the latest review from each reviewer
             const latestReviews = {};
             reviews.data.forEach(review => {
-              // Only count APPROVED or CHANGES_REQUESTED states
+              // Only count completed reviews (not COMMENTED or PENDING)
               if (review.state === 'APPROVED' || review.state === 'CHANGES_REQUESTED') {
-                latestReviews[review.user.login] = review;
+                // Store the latest review by submission time
+                if (!latestReviews[review.user.login] || 
+                    new Date(review.submitted_at) > new Date(latestReviews[review.user.login].submitted_at)) {
+                  latestReviews[review.user.login] = review;
+                }
               }
             });
             
-            // Collect requested reviewers (both users and teams)
-            const requestedReviewers = [];
+            // Get requested reviewers
+            const requestedReviewersData = await github.rest.pulls.listRequestedReviewers({
+              owner,
+              repo,
+              pull_number: number
+            });
             
-            // Add individual reviewers
-            if (pr.data.requested_reviewers) {
-              pr.data.requested_reviewers.forEach(reviewer => {
-                requestedReviewers.push(reviewer.login);
+            // Collect all reviewers (both requested and those who have reviewed)
+            const allReviewers = new Set();
+            
+            // Add individual requested reviewers
+            if (requestedReviewersData.data.users) {
+              requestedReviewersData.data.users.forEach(reviewer => {
+                allReviewers.add(reviewer.login);
               });
             }
             
-            // Add team reviewers (if you have team-level reviews)
-            if (pr.data.requested_teams) {
-              pr.data.requested_teams.forEach(team => {
-                requestedReviewers.push(`team:${team.slug}`);
-              });
-            }
+            // Add all reviewers who have already submitted a review
+            Object.keys(latestReviews).forEach(reviewer => {
+              allReviewers.add(reviewer);
+            });
             
-            // Check assigned reviewers
-            let allApproved = true;
-            let notApprovedReviewers = [];
+            // Check if any reviewers have pending re-reviews requested
+            // A re-review is needed if they're in the requested reviewers list AND
+            // they have a previous approval
+            const needsReReview = [];
+            const notYetApproved = [];
             
-            for (const reviewer of requestedReviewers) {
-              // Skip team reviewers in this simple implementation
-              if (reviewer.startsWith('team:')) {
-                console.log(`Team reviewer: ${reviewer} - skipping check`);
-                continue;
-              }
+            for (const reviewer of allReviewers) {
+              // Check if reviewer is currently requested
+              const isCurrentlyRequested = requestedReviewersData.data.users.some(
+                user => user.login === reviewer
+              );
               
-              if (!latestReviews[reviewer] || latestReviews[reviewer].state !== 'APPROVED') {
-                allApproved = false;
-                notApprovedReviewers.push(reviewer);
+              // Check if they previously approved
+              const hasApproved = latestReviews[reviewer] && 
+                                 latestReviews[reviewer].state === 'APPROVED';
+              
+              // If they are requested and had previously approved, they need to re-review
+              if (isCurrentlyRequested && hasApproved) {
+                needsReReview.push(reviewer);
+              }
+              // If they are requested and haven't approved yet
+              else if (isCurrentlyRequested && !hasApproved) {
+                notYetApproved.push(reviewer);
+              }
+              // If they're not in the requested list but also haven't approved
+              else if (!isCurrentlyRequested && (!latestReviews[reviewer] || 
+                      latestReviews[reviewer].state !== 'APPROVED')) {
+                notYetApproved.push(reviewer);
               }
             }
             
@@ -85,15 +107,18 @@ jobs:
             const statusContext = 'PR Approvals Check';
             let statusState, statusDescription;
             
-            if (requestedReviewers.length === 0) {
+            if (allReviewers.size === 0) {
               statusState = 'success';
               statusDescription = 'No reviewers requested for this PR';
-            } else if (allApproved) {
+            } else if (needsReReview.length > 0) {
+              statusState = 'pending';
+              statusDescription = `Re-review needed from: ${needsReReview.join(', ')}`;
+            } else if (notYetApproved.length > 0) {
+              statusState = 'pending';
+              statusDescription = `Waiting for approval from: ${notYetApproved.join(', ')}`;
+            } else {
               statusState = 'success';
               statusDescription = 'All requested reviewers have approved this PR';
-            } else {
-              statusState = 'pending';
-              statusDescription = `Waiting for approval from: ${notApprovedReviewers.join(', ')}`;
             }
             
             // Create commit status
