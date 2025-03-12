@@ -43,10 +43,14 @@ jobs:
                 page: page
               });
 
+              console.log(data);
+
               if (runs.workflow_runs.length === 0) break;
               allRuns = allRuns.concat(runs.workflow_runs);
               page++;
             }
+
+            console.log(allRuns);
 
             let cancelled = 0;
             for (const run of allRuns) {
