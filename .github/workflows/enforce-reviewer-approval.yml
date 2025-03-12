@@ -22,18 +22,24 @@ jobs:
           script: |
             const { owner, repo } = context.repo;
             const currentRunId = context.runId;
-            const branch = context.ref.replace('refs/heads/', '');
+
+            // Get the correct source branch name for PRs
+            const branch = context.payload.pull_request ? context.payload.pull_request.head.ref : context.ref.replace('refs/heads/', '');
 
             console.log(`🔄 Fetching previous runs on branch: ${branch}...`);
 
             const { data: runs } = await github.rest.actions.listWorkflowRunsForRepo({
               owner,
               repo,
-              branch: branch,
+              branch: branch, // Use correct branch name
               status: "in_progress"
             });
 
-            console.log(runs);
+            console.log(runs)
+
+            if (runs.workflow_runs.length === 0) {
+              console.log("⚠️ No previous runs found to cancel.");
+            }
 
             for (const run of runs.workflow_runs) {
               if (run.id !== currentRunId) {
