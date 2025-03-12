@@ -28,7 +28,7 @@ jobs:
             const { data: runs } = await github.rest.actions.listWorkflowRuns({
               owner,
               repo,
-              workflow_id: "enforce-review-approvals.yml", // Match the workflow file name
+              workflow_id: "enforce-reviewer-approval.yml", // Match the workflow file name
               branch: context.ref.replace('refs/heads/', '')
             });
 
