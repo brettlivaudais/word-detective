@@ -15,24 +15,25 @@ jobs:
   cancel-previous-runs:
     runs-on: ubuntu-latest
     steps:
-      - name: Cancel Previous Runs for Same PR (Any Event Type)
+      - name: Fetch & Cancel All Previous Runs for This PR (Any Event)
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const { owner, repo } = context.repo;
             const currentRunId = context.runId;
+            const prNumber = context.payload.pull_request ? context.payload.pull_request.number : null;
             const branch = context.payload.pull_request ? context.payload.pull_request.head.ref : null;
 
-            if (!branch) {
+            if (!prNumber || !branch) {
               console.log("⚠️ Not a PR event, skipping cancellation.");
               return;
             }
 
-            console.log(`🔄 Fetching all previous workflow runs on branch: ${branch}...`);
+            console.log(`🔄 Fetching ALL previous workflow runs on branch: ${branch} for PR #${prNumber}...`);
 
             let page = 1;
-            let perPage = 100; // Max allowed per request
+            let perPage = 100;
             let allRuns = [];
 
             while (true) {
@@ -53,9 +54,10 @@ jobs:
               if (
                 run.id !== currentRunId && 
                 run.head_branch === branch &&
+                run.event.includes("pull_request") &&
                 run.status !== "completed"
               ) {
-                console.log(`🛑 Cancelling previous workflow run: ${run.id}`);
+                console.log(`🛑 Cancelling previous workflow run: ${run.id} (triggered by ${run.event})`);
                 await github.rest.actions.cancelWorkflowRun({
                   owner,
                   repo,
@@ -68,42 +70,9 @@ jobs:
             if (cancelled === 0) {
               console.log("✅ No previous runs found to cancel.");
             } else {
-              console.log(`✅ Cancelled ${cancelled} previous runs.`);
+              console.log(`✅ Successfully cancelled ${cancelled} previous runs.`);
             }
 
-      - name: Debug Log API Response  # STEP 3 (Debugging)
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const { owner, repo } = context.repo;
-            const branch = context.payload.pull_request ? context.payload.pull_request.head.ref : null;
-
-            if (!branch) {
-              console.log("⚠️ Not a PR event, skipping debug.");
-              return;
-            }
-
-            console.log(`🔄 Fetching workflow runs for debugging...`);
-
-            let page = 1;
-            let perPage = 100;
-            let allRuns = [];
-
-            while (true) {
-              const { data: runs } = await github.rest.actions.listWorkflowRunsForRepo({
-                owner,
-                repo,
-                per_page: perPage,
-                page: page
-              });
-
-              if (runs.workflow_runs.length === 0) break;
-              allRuns = allRuns.concat(runs.workflow_runs);
-              page++;
-            }
-
-            console.log("🚀 API Response:", JSON.stringify(allRuns, null, 2));
           
   check-reviewers:
     runs-on: ubuntu-latest
