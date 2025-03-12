@@ -33,6 +33,7 @@ jobs:
             });
 
             for (const run of runs.workflow_runs) {
+              console.log(`🛑 Trying to cancel workflow run: ${run.id} (${run.status})`);
               if (run.status !== "completed") {
                 console.log(`🛑 Cancelling old workflow run: ${run.id}`);
                 await github.rest.actions.cancelWorkflowRun({
