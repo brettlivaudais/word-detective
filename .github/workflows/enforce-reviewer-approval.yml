@@ -2,10 +2,10 @@ name: Enforce Reviewer Approvals
 
 on:
   pull_request:
-    types: [review_requested, review_request_removed, submitted, synchronize, opened]
+    types: [review_requested, review_request_removed, synchronize, opened]
   pull_request_review:
     types: [submitted, edited, dismissed]
-    
+
 permissions:
   pull-requests: write
   checks: write
@@ -15,22 +15,21 @@ jobs:
   cancel-previous-runs:
     runs-on: ubuntu-latest
     steps:
-      - name: Fetch & Cancel All Previous Runs for This PR (Any Event)
+      - name: Cancel Previous Runs for This PR
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const { owner, repo } = context.repo;
             const currentRunId = context.runId;
-            const prNumber = context.payload.pull_request ? context.payload.pull_request.number : null;
             const branch = context.payload.pull_request ? context.payload.pull_request.head.ref : null;
-
-            if (!prNumber || !branch) {
+            
+            if (!branch) {
               console.log("⚠️ Not a PR event, skipping cancellation.");
               return;
             }
 
-            console.log(`🔄 Fetching ALL previous workflow runs on branch: ${branch} for PR #${prNumber}...`);
+            console.log(`🔄 Fetching all previous workflow runs on branch: ${branch}...`);
 
             let page = 1;
             let perPage = 100;
@@ -52,12 +51,11 @@ jobs:
             let cancelled = 0;
             for (const run of allRuns) {
               if (
-                run.id !== currentRunId && 
+                run.id !== currentRunId &&
                 run.head_branch === branch &&
-                run.event.includes("pull_request") &&
                 run.status !== "completed"
               ) {
-                console.log(`🛑 Cancelling previous workflow run: ${run.id} (triggered by ${run.event})`);
+                console.log(`🛑 Cancelling previous workflow run: ${run.id}`);
                 await github.rest.actions.cancelWorkflowRun({
                   owner,
                   repo,
@@ -67,22 +65,14 @@ jobs:
               }
             }
 
-            if (cancelled === 0) {
-              console.log("✅ No previous runs found to cancel.");
-            } else {
-              console.log(`✅ Successfully cancelled ${cancelled} previous runs.`);
-            }
-
-          
+            console.log(cancelled > 0 
+              ? `✅ Cancelled ${cancelled} previous runs.` 
+              : "✅ No previous runs found to cancel.");
+  
   check-reviewers:
     runs-on: ubuntu-latest
     needs: cancel-previous-runs
     steps:
-      - name: Cancel Previous Runs
-        uses: styfle/cancel-workflow-action@0.12.0
-        with:
-          access_token: ${{ secrets.GITHUB_TOKEN }}
-    
       - name: Override Old Failed Checks
         uses: actions/github-script@v7
         with:
@@ -101,12 +91,12 @@ jobs:
               status: "completed",
               conclusion: "success",
               output: {
-                title: "Overriding Old Failed Checks",
+                title: "Invalidating Old Failed Checks",
                 summary: "Previous failures are cleared because a newer check has passed."
               }
             });
-        
-      - name: Check required approvals
+
+      - name: Check Required Approvals
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -115,7 +105,7 @@ jobs:
             const owner = context.repo.owner;
             const repo = context.repo.repo;
 
-            // Fetch all requested reviewers (users only, ignoring teams)
+            // Fetch all requested reviewers
             const { data: requestedReviewers } = await github.rest.pulls.listRequestedReviewers({
               owner,
               repo,
@@ -124,41 +114,37 @@ jobs:
 
             const requiredReviewers = new Set(requestedReviewers.users.map(user => user.login));
 
-            // Fetch all reviews for this PR
+            // Fetch all reviews
             const { data: reviews } = await github.rest.pulls.listReviews({
               owner,
               repo,
               pull_number: prNumber
             });
 
-            // Fetch all review requests (to track re-reviews)
+            // Fetch timeline events (track re-review requests)
             const { data: timeline } = await github.rest.issues.listEventsForTimeline({
               owner,
               repo,
               issue_number: prNumber
             });
 
-            // Track who has been re-requested for review
             const reRequestedReviewers = new Set();
             for (const event of timeline) {
-              if (event.event === "review_requested") {
+              if (event.event === "review_requested" && event.requested_reviewer) {
                 reRequestedReviewers.add(event.requested_reviewer.login);
               }
             }
 
-            // Track latest review states per reviewer
+            // Track latest review states
             const latestReviews = new Map();
             for (const review of reviews) {
               latestReviews.set(review.user.login, review.state);
             }
 
-            // Determine if all assigned reviewers have approved (taking re-requests into account)
+            // Check if all required reviewers have approved
             let allApproved = true;
             for (const reviewer of requiredReviewers) {
-              const reviewState = latestReviews.get(reviewer);
-              
-              // If a reviewer was re-requested, ignore old approvals
-              if (reRequestedReviewers.has(reviewer) || reviewState !== "APPROVED") {
+              if (reRequestedReviewers.has(reviewer) || latestReviews.get(reviewer) !== "APPROVED") {
                 allApproved = false;
                 break;
               }
