@@ -31,6 +31,8 @@ jobs:
               workflow_id: "enforce-reviewer-approval.yml", // Match the workflow file name
               branch: context.ref.replace('refs/heads/', '')
             });
+            console.log(`🔄 Finished collecting runs for PR #${prNumber}...`);
+            console.log(runs);
 
             for (const run of runs.workflow_runs) {
               console.log(`🛑 Trying to cancel workflow run: ${run.id} (${run.status})`);
