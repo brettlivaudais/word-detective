@@ -72,7 +72,39 @@ jobs:
             } else {
               console.log(`✅ Successfully cancelled ${cancelled} previous runs.`);
             }
+      - name: Log API Response
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const { owner, repo } = context.repo;
+            const branch = context.payload.pull_request ? context.payload.pull_request.head.ref : null;
 
+            if (!branch) {
+              console.log("⚠️ Not a PR event, skipping debug.");
+              return;
+            }
+
+            console.log(`🔄 Fetching workflow runs for debugging on branch: ${branch}...`);
+
+            let page = 1;
+            let perPage = 100;
+            let allRuns = [];
+
+            while (true) {
+              const { data: runs } = await github.rest.actions.listWorkflowRunsForRepo({
+                owner,
+                repo,
+                per_page: perPage,
+                page: page
+              });
+
+              if (runs.workflow_runs.length === 0) break;
+              allRuns = allRuns.concat(runs.workflow_runs);
+              page++;
+            }
+
+            console.log("🚀 API Response:", JSON.stringify(allRuns, null, 2));
           
   check-reviewers:
     runs-on: ubuntu-latest
