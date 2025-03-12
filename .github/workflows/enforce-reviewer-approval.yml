@@ -1,156 +1,103 @@
-name: Enforce Reviewer Approvals
+name: PR Approval Requirements
 
 on:
   pull_request:
-    types: [opened, review_requested, review_request_removed, synchronize]
+    types: [opened, reopened, review_requested, review_request_removed]
   pull_request_review:
-    types: [submitted, edited, dismissed]
-
-permissions:
-  pull-requests: write
-  checks: write
-  actions: write
+    types: [submitted, dismissed]
 
 jobs:
-  clear-old-runs:
+  check-approvals:
+    name: Check All Reviewers Approved
     runs-on: ubuntu-latest
     steps:
-      - name: Fetch & Invalidate Previous Runs
+      - name: Check if all reviewers approved
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const { owner, repo } = context.repo;
-            const currentRunId = context.runId;
-            const branch = context.payload.pull_request ? context.payload.pull_request.head.ref : null;
+            const { owner, repo, number } = context.issue;
             
-            if (!branch) {
-              console.log("⚠️ Not a PR event, skipping cancellation.");
-              return;
-            }
+            // Get PR data including requested reviewers
+            const pr = await github.rest.pulls.get({
+              owner,
+              repo,
+              pull_number: number
+            });
 
-            console.log(`🔄 Fetching all previous workflow runs on branch: ${branch}...`);
-
-            let page = 1;
-            let perPage = 100;
-            let allRuns = [];
-
-            while (true) {
-              const { data: runs } = await github.rest.actions.listWorkflowRunsForRepo({
-                owner,
-                repo,
-                per_page: perPage,
-                page: page
+            // Get all reviews for this PR
+            const reviews = await github.rest.pulls.listReviews({
+              owner,
+              repo,
+              pull_number: number
+            });
+            
+            // Get the latest review from each reviewer
+            const latestReviews = {};
+            reviews.data.forEach(review => {
+              // Only count APPROVED or CHANGES_REQUESTED states
+              if (review.state === 'APPROVED' || review.state === 'CHANGES_REQUESTED') {
+                latestReviews[review.user.login] = review;
+              }
+            });
+            
+            // Collect requested reviewers (both users and teams)
+            const requestedReviewers = [];
+            
+            // Add individual reviewers
+            if (pr.data.requested_reviewers) {
+              pr.data.requested_reviewers.forEach(reviewer => {
+                requestedReviewers.push(reviewer.login);
               });
-
-              if (runs.workflow_runs.length === 0) break;
-              allRuns = allRuns.concat(runs.workflow_runs);
-              page++;
             }
-
-            let invalidated = 0;
-            for (const run of allRuns) {
-              if (
-                run.id !== currentRunId &&
-                run.head_branch === branch
-              ) {
-                console.log(`✅ Marking previous run as successful: ${run.id}`);
-                await github.rest.checks.create({
-                  owner,
-                  repo,
-                  name: "Enforce Reviewer Approvals",
-                  head_sha: run.head_sha,
-                  status: "completed",
-                  conclusion: "success",
-                  output: {
-                    title: "Invalidated Old Runs",
-                    summary: "Old stale workflow runs have been cleared."
-                  }
-                });
-                invalidated++;
-              }
+            
+            // Add team reviewers (if you have team-level reviews)
+            if (pr.data.requested_teams) {
+              pr.data.requested_teams.forEach(team => {
+                requestedReviewers.push(`team:${team.slug}`);
+              });
             }
-
-            console.log(invalidated > 0 
-              ? `✅ Invalidated ${invalidated} old runs.` 
-              : "✅ No previous runs found to invalidate.");
-
-  enforce-approvals:
-    runs-on: ubuntu-latest
-    needs: clear-old-runs
-    steps:
-      - name: Check Required Approvals
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const prNumber = context.payload.pull_request.number;
-            const owner = context.repo.owner;
-            const repo = context.repo.repo;
-
-            // Fetch all requested reviewers
-            const { data: requestedReviewers } = await github.rest.pulls.listRequestedReviewers({
-              owner,
-              repo,
-              pull_number: prNumber
-            });
-
-            const requiredReviewers = new Set(requestedReviewers.users.map(user => user.login));
-
-            // Fetch all reviews
-            const { data: reviews } = await github.rest.pulls.listReviews({
-              owner,
-              repo,
-              pull_number: prNumber
-            });
-
-            // Fetch timeline events (track re-review requests)
-            const { data: timeline } = await github.rest.issues.listEventsForTimeline({
-              owner,
-              repo,
-              issue_number: prNumber
-            });
-
-            const reRequestedReviewers = new Set();
-            for (const event of timeline) {
-              if (event.event === "review_requested" && event.requested_reviewer) {
-                reRequestedReviewers.add(event.requested_reviewer.login);
-              }
-            }
-
-            // Track latest review states
-            const latestReviews = new Map();
-            for (const review of reviews) {
-              latestReviews.set(review.user.login, review.state);
-            }
-
-            // Check if all required reviewers have approved
+            
+            // Check assigned reviewers
             let allApproved = true;
-            for (const reviewer of requiredReviewers) {
-              if (reRequestedReviewers.has(reviewer) || latestReviews.get(reviewer) !== "APPROVED") {
+            let notApprovedReviewers = [];
+            
+            for (const reviewer of requestedReviewers) {
+              // Skip team reviewers in this simple implementation
+              if (reviewer.startsWith('team:')) {
+                console.log(`Team reviewer: ${reviewer} - skipping check`);
+                continue;
+              }
+              
+              if (!latestReviews[reviewer] || latestReviews[reviewer].state !== 'APPROVED') {
                 allApproved = false;
-                break;
+                notApprovedReviewers.push(reviewer);
               }
             }
-
-            if (allApproved) {
-              console.log("✅ All required reviewers have approved.");
+            
+            // Set PR status based on approval state
+            const statusContext = 'PR Approvals Check';
+            let statusState, statusDescription;
+            
+            if (requestedReviewers.length === 0) {
+              statusState = 'success';
+              statusDescription = 'No reviewers requested for this PR';
+            } else if (allApproved) {
+              statusState = 'success';
+              statusDescription = 'All requested reviewers have approved this PR';
             } else {
-              console.log("❌ Not all required reviewers have approved.");
-              core.setFailed("Pull request cannot be merged until all requested reviewers approve.");
+              statusState = 'pending';
+              statusDescription = `Waiting for approval from: ${notApprovedReviewers.join(', ')}`;
             }
-
-      - name: Force Re-Run After Clearing Old Runs
-        if: success()
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const { owner, repo } = context.repo;
-            console.log("🔄 Triggering a fresh workflow run...");
-            await github.rest.actions.createWorkflowDispatch({
+            
+            // Create commit status
+            await github.rest.repos.createCommitStatus({
               owner,
               repo,
-              workflow_id: "enforce-review-approvals.yml",
-              ref: context.ref
+              sha: pr.data.head.sha,
+              state: statusState,
+              description: statusDescription,
+              context: statusContext
             });
+            
+            console.log(`PR #${number} approval status: ${statusDescription}`);
