@@ -4,7 +4,7 @@ on:
   pull_request:
     types: [review_requested, review_request_removed, submitted, synchronize, opened]
   pull_request_review:
-    types: [submitted]
+    types: [submitted, edited, dismissed]
     
 permissions:
   pull-requests: read
