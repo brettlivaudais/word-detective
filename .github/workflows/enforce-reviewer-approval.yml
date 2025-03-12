@@ -58,7 +58,6 @@ jobs:
             for (const run of allRuns) {
               if (
                 run.id !== currentRunId && 
-                run.status !== "completed" && 
                 run.event.includes("pull_request") &&  // Only consider PR-related events
                 run.head_branch === branch // Ensure it's the same PR branch
               ) {
