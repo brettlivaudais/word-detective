@@ -23,6 +23,8 @@ jobs:
             const { owner, repo } = context.repo;
             const currentRunId = context.runId;
             const prNumber = context.payload.pull_request ? context.payload.pull_request.number : null;
+            const branch = context.payload.pull_request ? context.payload.pull_request.head.ref : context.ref.replace('refs/heads/', '');
+
 
             if (!prNumber) {
               console.log("⚠️ Not a PR event, skipping cancellation.");
@@ -58,7 +60,7 @@ jobs:
                 run.id !== currentRunId && 
                 run.status !== "completed" && 
                 run.event.includes("pull_request") &&  // Only consider PR-related events
-                run.head_branch === context.payload.pull_request.head.ref // Ensure it's the same PR branch
+                run.head_branch === branch // Ensure it's the same PR branch
               ) {
                 console.log(`🛑 Cancelling previous workflow run: ${run.id}`);
                 await github.rest.actions.cancelWorkflowRun({
