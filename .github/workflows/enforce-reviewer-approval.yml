@@ -21,22 +21,22 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const { owner, repo } = context.repo;
-            const prNumber = context.payload.pull_request.number;
+            const currentRunId = context.runId;
+            const branch = context.ref.replace('refs/heads/', '');
 
-            console.log(`🔄 Fetching previous runs for PR #${prNumber}...`);
+            console.log(`🔄 Fetching previous runs on branch: ${branch}...`);
 
-            const { data: runs } = await github.rest.actions.listWorkflowRuns({
+            const { data: runs } = await github.rest.actions.listWorkflowRunsForRepo({
               owner,
               repo,
-              workflow_id: "enforce-reviewer-approval.yml", // Match the workflow file name
-              branch: context.ref.replace('refs/heads/', '')
+              branch: branch,
+              status: "in_progress"
             });
-            console.log(`🔄 Finished collecting runs for PR #${prNumber}...`);
+
             console.log(runs);
 
             for (const run of runs.workflow_runs) {
-              console.log(`🛑 Trying to cancel workflow run: ${run.id} (${run.status})`);
-              if (run.status !== "completed") {
+              if (run.id !== currentRunId) {
                 console.log(`🛑 Cancelling old workflow run: ${run.id}`);
                 await github.rest.actions.cancelWorkflowRun({
                   owner,
