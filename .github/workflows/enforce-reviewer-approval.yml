@@ -7,8 +7,9 @@ on:
     types: [submitted, edited, dismissed]
     
 permissions:
-  pull-requests: read
+  pull-requests: write
   checks: write
+  actions: write
 
 jobs:
   cancel-previous-runs:
