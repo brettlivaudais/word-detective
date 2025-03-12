@@ -43,7 +43,7 @@ jobs:
                 page: page
               });
 
-              console.log(runs);
+              // console.log(runs);
 
               if (runs.workflow_runs.length === 0) break;
               allRuns = allRuns.concat(runs.workflow_runs);
@@ -86,7 +86,7 @@ jobs:
           access_token: ${{ secrets.GITHUB_TOKEN }}
     
       - name: Delay execution for 5 seconds
-        run: sleep 5
+        run: sleep 1
         
       - name: Check required approvals
         uses: actions/github-script@v7
