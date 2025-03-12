@@ -43,7 +43,7 @@ jobs:
                 page: page
               });
 
-              console.log(data);
+              console.log(runs);
 
               if (runs.workflow_runs.length === 0) break;
               allRuns = allRuns.concat(runs.workflow_runs);
