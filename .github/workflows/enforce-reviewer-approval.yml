@@ -1,37 +1,183 @@
-name: Enforce All Tagged Reviewers' Approval
+name: Enforce Reviewer Approvals
 
 on:
   pull_request:
-    types:
-      - closed  # Trigger when a PR is merged
+    types: [review_requested, review_request_removed, submitted, synchronize, opened]
+  pull_request_review:
+    types: [submitted, edited, dismissed]
+    
+permissions:
+  pull-requests: write
+  checks: write
+  actions: write
 
 jobs:
-  check-reviewers:
-    if: github.event.pull_request.merged == true  # Only run on merged PRs
+  cancel-previous-runs:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Check required reviewer approvals
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          PR_NUMBER=${{ github.event.pull_request.number }}
-          REPO="${{ github.repository }}"
-          
-          # Get the list of requested reviewers (users, not teams)
-          REQUESTED_REVIEWERS=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
-            "https://api.github.com/repos/$REPO/pulls/$PR_NUMBER/requested_reviewers" | jq -r '.users[].login')
-          
-          # Get the list of approved reviewers
-          APPROVED_REVIEWERS=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
-            "https://api.github.com/repos/$REPO/pulls/$PR_NUMBER/reviews" | jq -r '.[] | select(.state=="APPROVED") | .user.login')
+      - name: Cancel Previous Runs for Same PR (Any Event Type)
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const { owner, repo } = context.repo;
+            const currentRunId = context.runId;
+            const branch = context.payload.pull_request ? context.payload.pull_request.head.ref : null;
 
-          # Check if all requested reviewers have approved
-          for reviewer in $REQUESTED_REVIEWERS; do
-            if ! echo "$APPROVED_REVIEWERS" | grep -q "$reviewer"; then
-              echo "❌ Merge is invalid! Required reviewer @$reviewer has NOT approved."
-              exit 1
-            fi
-          done
+            if (!branch) {
+              console.log("⚠️ Not a PR event, skipping cancellation.");
+              return;
+            }
+
+            console.log(`🔄 Fetching all previous workflow runs on branch: ${branch}...`);
+
+            let page = 1;
+            let perPage = 100; // Max allowed per request
+            let allRuns = [];
+
+            while (true) {
+              const { data: runs } = await github.rest.actions.listWorkflowRunsForRepo({
+                owner,
+                repo,
+                per_page: perPage,
+                page: page
+              });
+
+              if (runs.workflow_runs.length === 0) break;
+              allRuns = allRuns.concat(runs.workflow_runs);
+              page++;
+            }
+
+            let cancelled = 0;
+            for (const run of allRuns) {
+              if (
+                run.id !== currentRunId && 
+                run.head_branch === branch &&
+                run.status !== "completed"
+              ) {
+                console.log(`🛑 Cancelling previous workflow run: ${run.id}`);
+                await github.rest.actions.cancelWorkflowRun({
+                  owner,
+                  repo,
+                  run_id: run.id
+                });
+                cancelled++;
+              }
+            }
+
+            if (cancelled === 0) {
+              console.log("✅ No previous runs found to cancel.");
+            } else {
+              console.log(`✅ Cancelled ${cancelled} previous runs.`);
+            }
+
+      - name: Debug Log API Response  # STEP 3 (Debugging)
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const { owner, repo } = context.repo;
+            const branch = context.payload.pull_request ? context.payload.pull_request.head.ref : null;
+
+            if (!branch) {
+              console.log("⚠️ Not a PR event, skipping debug.");
+              return;
+            }
+
+            console.log(`🔄 Fetching workflow runs for debugging...`);
+
+            let page = 1;
+            let perPage = 100;
+            let allRuns = [];
+
+            while (true) {
+              const { data: runs } = await github.rest.actions.listWorkflowRunsForRepo({
+                owner,
+                repo,
+                per_page: perPage,
+                page: page
+              });
+
+              if (runs.workflow_runs.length === 0) break;
+              allRuns = allRuns.concat(runs.workflow_runs);
+              page++;
+            }
+
+            console.log("🚀 API Response:", JSON.stringify(allRuns, null, 2));
           
-          echo "✅ All tagged reviewers have approved. Merge is valid."
+  check-reviewers:
+    runs-on: ubuntu-latest
+    needs: cancel-previous-runs
+    steps:
+      - name: Cancel Previous Runs
+        uses: styfle/cancel-workflow-action@0.12.0
+        with:
+          access_token: ${{ secrets.GITHUB_TOKEN }}
+    
+      - name: Delay execution for 5 seconds
+        run: sleep 5
+        
+      - name: Check required approvals
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const prNumber = context.payload.pull_request.number;
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+
+            // Fetch all requested reviewers (users only, ignoring teams)
+            const { data: requestedReviewers } = await github.rest.pulls.listRequestedReviewers({
+              owner,
+              repo,
+              pull_number: prNumber
+            });
+
+            const requiredReviewers = new Set(requestedReviewers.users.map(user => user.login));
+
+            // Fetch all reviews for this PR
+            const { data: reviews } = await github.rest.pulls.listReviews({
+              owner,
+              repo,
+              pull_number: prNumber
+            });
+
+            // Fetch all review requests (to track re-reviews)
+            const { data: timeline } = await github.rest.issues.listEventsForTimeline({
+              owner,
+              repo,
+              issue_number: prNumber
+            });
+
+            // Track who has been re-requested for review
+            const reRequestedReviewers = new Set();
+            for (const event of timeline) {
+              if (event.event === "review_requested") {
+                reRequestedReviewers.add(event.requested_reviewer.login);
+              }
+            }
+
+            // Track latest review states per reviewer
+            const latestReviews = new Map();
+            for (const review of reviews) {
+              latestReviews.set(review.user.login, review.state);
+            }
+
+            // Determine if all assigned reviewers have approved (taking re-requests into account)
+            let allApproved = true;
+            for (const reviewer of requiredReviewers) {
+              const reviewState = latestReviews.get(reviewer);
+              
+              // If a reviewer was re-requested, ignore old approvals
+              if (reRequestedReviewers.has(reviewer) || reviewState !== "APPROVED") {
+                allApproved = false;
+                break;
+              }
+            }
+
+            if (allApproved) {
+              console.log("✅ All required reviewers have approved.");
+            } else {
+              console.log("❌ Not all required reviewers have approved.");
+              core.setFailed("Pull request cannot be merged until all requested reviewers approve.");
+            }
